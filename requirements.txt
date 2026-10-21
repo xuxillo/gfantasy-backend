@@ -7,6 +7,7 @@ uvicorn>=0.32
 httpx>=0.27
 PyJWT>=2.8
 email-validator>=2.1
+a2wsgi>=1.0.0  # ASGI-to-WSGI wrapper for PythonAnywhere
 
 # --- Tests ---
 pytest>=8.2
