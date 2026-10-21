@@ -31,6 +31,7 @@ FANTASY_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 # SofaScore DB
 SOFASCORE_DB_DIR = Path(__file__).resolve().parent / "data"
 SOFASCORE_DB_PATH = SOFASCORE_DB_DIR / "sofascore.db"
+SOFASCORE_DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # Raíz de imágenes de SofaScore (fotos de jugadores y escudos de clubes).
 # Las rutas guardadas en imagenes_jugadores/imagenes_equipos son relativas a
