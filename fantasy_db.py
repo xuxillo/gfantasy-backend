@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-TEMPORADA_ID = 1
-FANTASY_DB_PATH = "sofascore.db"
-
 import sqlite3
 import json
 from datetime import datetime
 from typing import Any, Optional
+
+# Import canonical DB path from config to ensure single source of truth.
+from fantasy_config import SOFASCORE_DB_PATH
+
+TEMPORADA_ID = 1
+FANTASY_DB_PATH = "sofascore.db"
 
 
 def obtener_eventos_con_incidentes(
@@ -25,12 +28,12 @@ def guardar_fila_clasificacion(
     pass
 
 
-def init_db(db_path: str = "sofascore.db") -> sqlite3.Connection:
+def init_db(db_path: str = str(SOFASCORE_DB_PATH)) -> sqlite3.Connection:
     conexion = sqlite3.connect(db_path)
     return conexion
 
 
-def get_conn(db_path: str = "sofascore.db") -> sqlite3.Connection:
+def get_conn(db_path: str = str(SOFASCORE_DB_PATH)) -> sqlite3.Connection:
     return sqlite3.connect(db_path)
 
 
@@ -55,7 +58,7 @@ def now_iso() -> str:
     return datetime.now().isoformat()
 
 
-def transaction(db_path: str = "sofascore.db") -> None:
+def transaction(db_path: str = str(SOFASCORE_DB_PATH)) -> None:
     """Función de transacción básica para compatibilidad con fantasy_services.
 
     Args:
