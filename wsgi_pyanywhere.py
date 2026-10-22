@@ -20,7 +20,11 @@ os.environ.setdefault("CORS_ORIGINS", "https://gfweb-one.vercel.app")
 os.environ.setdefault("GURUTZE_DISABLE_AUTO_CLOSE", "1")
 
 from server_fantasy import app
+from fantasy_db import init_db
 
+# Explicitly initialize DB schema since WSGI doesn't trigger FastAPI lifespan events.
+# init_db uses CREATE TABLE IF NOT EXISTS, so it's safe to call on every startup.
+init_db()
 
 class ASGItoWSGI:
     def __init__(self, asgi_app):
