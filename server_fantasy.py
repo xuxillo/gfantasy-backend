@@ -273,7 +273,7 @@ app = FastAPI(title="Gurutze Fantasy API", version="1.0.0", lifespan=lifespan)
 # CORS: orígenes desde variable de entorno CORS_ORIGINS, separados por comas.
 # Ejemplo: http://localhost:3000,http://127.0.0.1:3000
 _cors_origins_raw = os.environ.get(
-    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://lvh.me:3000"
+    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://lvh.me:3000,https://gfweb-one.vercel.app"
 )
 # Convertir la cadena separada por comas a lista de cadenas
 _allowed_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
@@ -354,8 +354,9 @@ def decode_token(token: str) -> dict:
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     token_cookie: Optional[str] = Cookie(None, alias="fantasy_token"),
+    token_param: Optional[str] = Query(None, alias="token"),
 ) -> dict:
-    token = credentials.credentials if credentials else token_cookie
+    token = credentials.credentials if credentials else (token_cookie or token_param)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     payload = decode_token(token)
@@ -451,8 +452,9 @@ def auth_register(req: RegisterRequest, response: Response, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
     token = create_token(user["id"], user["username"])
-    set_token_cookie(response, token, request)
-    return get_user_context(user["id"])
+    set_token_cookie(response, token, request)  # keep for localhost dev
+    context = get_user_context(user["id"])
+    return {"token": token, **context}
 
 
 @app.post("/auth/login")
@@ -461,8 +463,9 @@ def auth_login(req: LoginRequest, response: Response, request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_token(user["id"], user["username"])
-    set_token_cookie(response, token, request)
-    return get_user_context(user["id"])
+    set_token_cookie(response, token, request)  # keep for localhost dev
+    context = get_user_context(user["id"])
+    return {"token": token, **context}
 
 
 @app.post("/auth/logout")
