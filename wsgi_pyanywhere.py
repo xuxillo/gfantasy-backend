@@ -33,17 +33,33 @@ init_db()
 # Use a2wsgi for robust ASGI-to-WSGI conversion (handles {path:*} routes correctly).
 try:
     from a2wsgi import ASGItoWSGI
-    application = ASGItoWSGI(app)
-    # Debug: list routes to stderr for error-log inspection
-    _routes = [r.path for r in app.routes if hasattr(r, "path")]
-    print(f"[WSGI] a2wsgi loaded. Routes: {len(_routes)}", file=sys.stderr)
+    _adapter = "a2wsgi"
 except ImportError:
+    _adapter = "fallback"
+
+import platform as _plat
+import fastapi as _fa
+import starlette as _starlithe
+
+# Debug: list routes and versions to stderr for error-log inspection
+_routes = [r.path for r in app.routes if hasattr(r, "path")]
+_sofa_routes = [r for r in _routes if "sofa" in r]
+print(f"[WSGI] Python: {_plat.python_version()}", file=sys.stderr)
+print(f"[WSGI] FastAPI: {_fa.__version__}", file=sys.stderr)
+print(f"[WSGI] Starlette: {_starlithe.__version__}", file=sys.stderr)
+print(f"[WSGI] Adapter: {_adapter}", file=sys.stderr)
+print(f"[WSGI] Routes: {len(_routes)} total, {len(_sofa_routes)} sofa-routes", file=sys.stderr)
+print(f"[WSGI] Sofa routes: {_sofa_routes}", file=sys.stderr)
+for _r in _routes:
+    print(f"  - {_r}", file=sys.stderr)
+
+if _adapter == "a2wsgi":
+    application = ASGItoWSGI(app)
+else:
     # Fallback: minimal ASGI-to-WSGI adapter
     import asyncio
 
     class ASGItoWSGI:
-        """Minimal fallback adapter."""
-
         def __init__(self, asgi_app):
             self.asgi_app = asgi_app
 
@@ -58,10 +74,3 @@ except ImportError:
                 loop.close()
 
     application = ASGItoWSGI(app)
-    print("[WSGI] Using fallback ASGItoWSGI adapter", file=sys.stderr)
-
-# Debug: list all routes on import
-_routes = [r.path for r in app.routes if hasattr(r, "path")]
-print(f"[WSGI] Registered routes ({len(_routes)}):", file=sys.stderr)
-for r in _routes:
-    print(f"  - {r}", file=sys.stderr)

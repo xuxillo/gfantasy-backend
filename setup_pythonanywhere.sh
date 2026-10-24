@@ -9,8 +9,20 @@
 set -e
 
 echo "🚀 [1/5] Instalando dependencias del backend Fantasy..."
-pip install --upgrade pip 2>&1 | tail -1
-pip install -r ~/gfantasy-backend/requirements.txt 2>&1 | tail -3
+
+# Detect Python version for the webapp (PythonAnywhere webapps use Python 3.11)
+# Use python3.11 specifically to match the webapp's Python version
+if command -v python3.11 &>/dev/null; then
+    PIP_CMD="python3.11 -m pip"
+elif [ -d "/home/xuxillo/.virtualenvs/python-3.11" ]; then
+    PIP_CMD="/home/xuxillo/.virtualenvs/python-3.11/bin/pip"
+else
+    PIP_CMD="pip"
+fi
+
+echo "  Using: $PIP_CMD"
+$PIP_CMD install --upgrade pip 2>&1 | tail -1
+$PIP_CMD install -r ~/gfantasy-backend/requirements.txt 2>&1 | tail -5
 
 echo ""
 echo "📝 [2/5] Creando archivo .env..."
