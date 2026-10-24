@@ -41,8 +41,12 @@ if [ ! -f ~/gfantasy-backend/.env ]; then
 JWT_SECRET=gurutze-fantasy-prod-secret-cambiar-en-produccion-2024
 
 # CORS: permitir el frontend de Vercel
-CORS_ORIGENS=https://gfweb-one.vercel.app,https://gfweb.vercel.app,http://localhost:3000
 CORS_ORIGINS=https://gfweb-one.vercel.app,https://gfweb.vercel.app,http://localhost:3000
+
+# Desactivar API interna de SofaScore (solo hay en local)
+# En PythonAnywhere NO hay un server en 127.0.0.1:8000, así que se desactiva
+# y el backend usa el CDN externo con curl_cffi como fallback.
+SOFASCORE_API=
 
 # Desactivar loops de fondo (usar endpoints bajo demanda)
 GURUTZE_DISABLE_AUTO_CLOSE=1
@@ -92,6 +96,8 @@ if os.path.isdir(_backend_dir):
 os.environ.setdefault("CORS_ORIGINS", "https://gfweb-one.vercel.app")
 os.environ.setdefault("GURUTZE_DISABLE_AUTO_CLOSE", "1")
 os.environ.setdefault("GURUTZE_DISABLE_SOFA_UPDATE", "1")
+# Desactivar API interna de SofaScore (no hay server en 127.0.0.1:8000 en PA)
+os.environ.setdefault("SOFASCORE_API", "")
 
 # Import the WSGI application (this re-imports everything fresh)
 from wsgi_pyanywhere import application
@@ -103,11 +109,37 @@ else
 fi
 
 echo ""
+echo "[EXTRA] Verificando base de datos de SofaScore..."
+if [ -f ~/gfantasy-backend/data/sofascore.db ]; then
+    DB_SIZE=$(du -h ~/gfantasy-backend/data/sofascore.db | cut -f1)
+    echo "  Base de datos encontrada: data/sofascore.db ($DB_SIZE)"
+    echo "  Jugadores en BD: $(python -c 'import sqlite3; c=sqlite3.connect("~/gfantasy-backend/data/sofascore.db"); print(c.execute("SELECT COUNT(*) FROM jugadores").fetchone()[0])' 2>/dev/null || echo 'N/A')"
+else
+    echo "  ADVERTENCIA: data/sofascore.db no encontrada"
+    echo "  Necesitas subirla desde tu máquina local con:"
+    echo "    scp -r data/ xuxillo@xuxillo.pythonanywhere.com:~/gfantasy-backend/"
+    echo "  También sube las imágenes:"
+    echo "    scp -r output/ xuxillo@xuxillo.pythonanywhere.com:~/gfantasy-backend/"
+fi
+
+echo ""
 echo "📋 [5/5] Resumen de verificacion:"
 echo "  - Repo: https://github.com/xuxillo/gfantasy-backend"
 echo "  - Directorio: ~/gfantasy-backend/"
 echo "  - BD: ~/gfantasy-backend/data/sofascore.db"
 echo "  - WSGI: wsgi_pyanywhere:application"
+echo "  - SOFASCORE_API: desactivada (empty env var) en PythonAnywhere"
+echo "  - CORS: configurada en .env"
+echo ""
+echo "Si las imágenes/fotos no cargan, sube también:"
+echo "  scp -r output/ xuxillo@xuxillo.pythonanywhere.com:~/gfantasy-backend/"
+echo ""
+echo "Para verificar jornada de SofaScore:"
+echo "  curl https://xuxillo.pythonanywhere.com/admin/sofascore-info"
+echo ""
+echo "Para forzar una jornada (si la BD está desactualizada):"
+echo "  curl -X POST https://xuxillo.pythonanywhere.com/leagues/1/admin/matchday \\"
+echo "    -d '{\"matchday\": 10}'"
 echo ""
 echo "✅ ¡Listo! Ve a la pestana 'Web' en PythonAnywhere y haz clic en 'Reload'."
 echo "   Luego visita: https://xuxillo.pythonanywhere.com"

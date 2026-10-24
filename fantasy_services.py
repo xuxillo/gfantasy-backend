@@ -652,21 +652,23 @@ def sync_players_from_sofascore_db(conn: Optional[sqlite3.Connection] = None, us
 async def sync_players_from_sofascore() -> int:
     """Fetch players from SofaScore API and cache in fantasy DB.
 
-    Intenta primero la API interna (http://127.0.0.1:8000). Si falla,
-    reintenta con el CDN externo de SoffaScore usando curl_cffi (TLS spoofing)
-    para evitar bloqueos 403. Si ambos fallan silenciosamente, devuelve 0.
+    Intenta primero la API interna (configurada en SOFASCORE_API). Si falla
+    o no está configurada, reintenta con el CDN externo de SoffaScore usando
+    curl_cffi (TLS spoofing) para evitar bloqueos 403. Si ambos fallan
+    silenciosamente, devuelve 0.
     """
     players = []
 
-    # 1) Internal API
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(f"{SOFASCORE_API}/api/players")
-            resp.raise_for_status()
-            data = resp.json()
-            players = data.get("players", [])
-    except Exception:
-        pass
+    # 1) Internal API (solo si está configurada — NO disponible en PythonAnywhere)
+    if SOFASCORE_API:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{SOFASCORE_API}/api/players")
+                resp.raise_for_status()
+                data = resp.json()
+                players = data.get("players", [])
+        except Exception:
+            pass
 
     # 2) External CDN fallback (curl_cffi for TLS spoofing)
     if not players:
@@ -679,7 +681,7 @@ async def sync_players_from_sofascore() -> int:
                         "Referer": "https://www.sofascore.com/",
                         "Origin": "https://www.sofascore.com",
                     },
-                    timeout=30,
+                    timeout=10,
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -2344,6 +2346,71 @@ def get_league_status(league_id: int) -> dict:
         "matches_finished": progress["finished"],
         "can_auto_close": progress["finished"] == progress["total"] and progress["total"] > 0,
     }
+
+
+def set_league_matchday(league_id: int, matchday: int) -> dict:
+    """Actualiza current_matchday de una liga (solo el creador).
+
+    Útil cuando la BD de SofaScore está desactualizada en PythonAnywhere y
+    se necesita forzar la jornada actual a mano.
+    """
+    matchday = int(matchday)
+    if matchday < 1 or matchday > MAX_SEASON_MATCHDAY:
+        raise ValueError(f"La jornada debe estar entre 1 y {MAX_SEASON_MATCHDAY}")
+    with transaction() as conn:
+        league = conn.execute("SELECT id, current_matchday FROM leagues WHERE id = ?", (league_id,)).fetchone()
+        if not league:
+            raise ValueError("Liga no existe")
+        old = league["current_matchday"]
+        conn.execute("UPDATE leagues SET current_matchday = ? WHERE id = ?", (matchday, league_id))
+    return {"league_id": league_id, "old_matchday": old, "new_matchday": matchday}
+
+
+def get_sofascore_info() -> dict:
+    """Info de la BD local de SofaScore para debugging en producción."""
+    info = {
+        "db_exists": bool(SOFASCORE_DB_PATH.exists()),
+        "db_size": SOFASCORE_DB_PATH.stat().st_size if SOFASCORE_DB_PATH.exists() else 0,
+        "db_path": str(SOFASCORE_DB_PATH),
+        "real_current_matchday": real_current_matchday(),
+    }
+    if info["db_exists"]:
+        try:
+            conn = sqlite3.connect(str(SOFASCORE_DB_PATH))
+            conn.row_factory = sqlite3.Row
+            try:
+                from configuracion import TEMPORADA_ID
+            except Exception:
+                TEMPORADA_ID = None
+            # Jornadas disponibles
+            rows = conn.execute(
+                "SELECT DISTINCT ronda FROM partidos ORDER BY ronda"
+            ).fetchall()
+            info["available_matchdays"] = [r["ronda"] for r in rows]
+            # Cantidad de partidos y resultados
+            if TEMPORADA_ID is not None:
+                counts = conn.execute(
+                    "SELECT ronda, COUNT(*) as total, SUM(CASE WHEN tipo_estado='finished' THEN 1 ELSE 0 END) as finished "
+                    "FROM partidos WHERE temporada_id = ? GROUP BY ronda ORDER BY ronda",
+                    (TEMPORADA_ID,),
+                ).fetchall()
+            else:
+                counts = conn.execute(
+                    "SELECT ronda, COUNT(*) as total, SUM(CASE WHEN tipo_estado='finished' THEN 1 ELSE 0 END) as finished "
+                    "FROM partidos GROUP BY ronda ORDER BY ronda"
+                ).fetchall()
+            info["matchday_details"] = [dict(r) for r in counts]
+            # Jugadores
+            player_count = conn.execute("SELECT COUNT(*) as c FROM jugadores").fetchone()
+            info["player_count"] = player_count["c"] if player_count else 0
+            # Equipos
+            team_count = conn.execute("SELECT COUNT(*) as c FROM clasificacion").fetchone()
+            info["team_count"] = team_count["c"] if team_count else 0
+        except Exception as e:
+            info["error"] = str(e)
+        finally:
+            conn.close()
+    return info
 
 
 # ---------- Herramientas de administración de liga (solo el creador) ----------

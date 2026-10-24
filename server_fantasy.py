@@ -41,6 +41,7 @@ from fantasy_services import (
     real_current_matchday,
     admin_reset_league, admin_grant_budget, admin_set_market_size,
     admin_list_transfers, admin_cancel_transfer,
+    set_league_matchday, get_sofascore_info,
 )
 from password_reset import send_password_reset_email
 
@@ -408,24 +409,38 @@ async def serve_sofa_image(foto_path: str):
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
 
-    # 2) API interna de SoffaScore
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{SOFASCORE_API}/sofa/{foto_path}")
-            if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
-                return Response(
-                    content=resp.content,
-                    media_type=resp.headers.get("content-type", "image/webp"),
-                )
-    except Exception:
-        pass
+    # 2) API interna de SoffaScore (solo si está configurada)
+    if SOFASCORE_API:
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                resp = await client.get(f"{SOFASCORE_API}/sofa/{foto_path}")
+                if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
+                    return Response(
+                        content=resp.content,
+                        media_type=resp.headers.get("content-type", "image/webp"),
+                    )
+        except Exception:
+            pass
 
     # 3) CDN externo (curl_cffi para evitar 403 anti-bot)
     cdn_url = _cdn_url_for_sofa_path(foto_path)
     if cdn_url:
         try:
             async with CurlAsyncSession(impersonate="chrome") as client:
-                resp = await client.get(cdn_url, headers=_SOFA_CDN_HEADERS, timeout=15)
+                resp = await client.get(cdn_url, headers=_SOFA_CDN_HEADERS, timeout=10)
+                if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
+                    return Response(
+                        content=resp.content,
+                        media_type=resp.headers.get("content-type", "image/webp"),
+                    )
+        except Exception:
+            pass
+
+    # 3b) CDN externo con httpx (fallback si curl_cffi falla o no está instalado)
+    if cdn_url:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(cdn_url, headers=_SOFA_CDN_HEADERS)
                 if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
                     return Response(
                         content=resp.content,
@@ -468,25 +483,41 @@ async def sofascore_api_proxy(foto_path: str, request: Request):
     """
     params = dict(request.query_params) if request.query_params else None
 
-    # 1) Internal SoffaScore API
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(f"{SOFASCORE_API}/{foto_path}", params=params)
-            if resp.status_code == 200:
-                return Response(
-                    content=resp.content,
-                    media_type=resp.headers.get("content-type", "application/json"),
-                )
-    except Exception:
-        pass
+    # 1) Internal SoffaScore API (solo si está configurada)
+    if SOFASCORE_API:
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                resp = await client.get(f"{SOFASCORE_API}/{foto_path}", params=params)
+                if resp.status_code == 200:
+                    return Response(
+                        content=resp.content,
+                        media_type=resp.headers.get("content-type", "application/json"),
+                    )
+        except Exception:
+            pass
 
     # 2) External CDN (strip "api/" prefix since CDN URL already has /api/v1)
     cdn_path = foto_path[4:] if foto_path.startswith("api/") else foto_path
     cdn_url = f"{SOFASCORE_CDN}/{cdn_path}"
+
+    # Try with curl_cffi first (TLS fingerprinting)
     try:
         async with CurlAsyncSession(impersonate="chrome") as client:
             resp = await client.get(
-                cdn_url, headers=_SOFA_CDN_HEADERS, params=params, timeout=30
+                cdn_url, headers=_SOFA_CDN_HEADERS, params=params, timeout=10
+            )
+            return Response(
+                content=resp.content,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+    except Exception:
+        pass
+
+    # 2b) Fallback: plain httpx (may still get 403, but worth trying)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                cdn_url, headers=_SOFA_CDN_HEADERS, params=params
             )
             return Response(
                 content=resp.content,
@@ -1271,11 +1302,23 @@ async def admin_sync_players(user: dict = Depends(get_current_user)):
 # ---------- Health ---------- #
 @app.get("/health")
 def health():
+    from fantasy_config import SOFASCORE_DB_PATH, IMAGES_ROOT
+    sofa_db_exists = SOFASCORE_DB_PATH.exists()
+    sofa_db_size = sofa_db_exists and SOFASCORE_DB_PATH.stat().st_size
+    images_root_exists = IMAGES_ROOT.exists()
+    images_count = 0
+    if images_root_exists:
+        images_count = sum(1 for _ in IMAGES_ROOT.rglob("*.webp"))
     return {
         "status": "ok",
         "service": "gurutze-fantasy",
-        "sofascore_api": SOFASCORE_API,
         "version": "v2-debug-fix",
+        "sofascore_api": SOFASCORE_API or "(disabled - usando CDN externa)",
+        "sofascore_db_exists": bool(sofa_db_exists) if sofa_db_exists else False,
+        "sofascore_db_size": sofa_db_size,
+        "images_root": str(IMAGES_ROOT),
+        "images_root_exists": images_root_exists,
+        "local_images_count": images_count,
         "routes_count": len([r for r in app.routes if hasattr(r, "path")]),
     }
 
@@ -1414,6 +1457,33 @@ def league_admin_sofa_refresh(league_id: int, user: dict = Depends(get_current_u
     """
     _require_league_owner(user, league_id)
     return _sofa_refresh_now()
+
+
+class SetMatchdayRequest(BaseModel):
+    matchday: int
+
+
+@app.post("/leagues/{league_id}/admin/matchday")
+def league_admin_matchday(league_id: int, body: SetMatchdayRequest, user: dict = Depends(get_current_user)):
+    """Actualiza la jornada actual de la liga.
+
+    Útil cuando la BD de SofaScore está desactualizada en PythonAnywhere y
+    se necesita forzar la jornada a mano (p. ej. pasar de jornada 2 a jornada 10).
+
+    Solo el creador de la liga.
+    """
+    _require_league_owner(user, league_id)
+    try:
+        out = set_league_matchday(league_id, body.matchday)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return out
+
+
+@app.get("/admin/sofascore-info")
+def sofascore_info(user: dict = Depends(get_current_user)):
+    """Info sobre la BD local de SofaScore (debug)."""
+    return get_sofascore_info()
 
 
 @app.get("/leagues/{league_id}/matchday/{matchday}/results")

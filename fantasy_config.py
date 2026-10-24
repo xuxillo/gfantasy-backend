@@ -37,10 +37,19 @@ SOFASCORE_DB_DIR.mkdir(parents=True, exist_ok=True)
 # Las rutas guardadas en imagenes_jugadores/imagenes_equipos son relativas a
 # este directorio, p. ej. "imagenes/jugadores/19013.webp". El backend las sirve
 # en /sofa/... y la web la hace proxy (ver next.config.js).
-IMAGES_ROOT = Path(__file__).resolve().parent / "output" / "25-26"
+# Se usa la carpeta de temporada actual (configuracion.TEMPORADA_CARPEDA = "26-27")
+# para mantener coherencia con el extractor de imágenes.
+try:
+    from configuracion import TEMPORADA_CARPEDA
+except Exception:  # pragma: no cover
+    TEMPORADA_CARPEDA = "26-27"
+IMAGES_ROOT = Path(__file__).resolve().parent / "output" / TEMPORADA_CARPEDA
 
-# SofaScore API base (internal)
-SOFASCORE_API = "http://127.0.0.1:8000"
+# SofaScore API base (internal). En PythonAnywhere NO está corriendo, así que
+# se puede desactivar con SOFASCORE_API="" (o "disabled") para saltar los
+# timeouts de 30 s. La CDN externa funciona como fallback.
+_raw_api = os.environ.get("SOFASCORE_API", "http://127.0.0.1:8000")
+SOFASCORE_API = "" if _raw_api.lower() in ("", "disabled", "none") else _raw_api
 
 # SoffaScore CDN externo (fallback cuando la API interna no esta disponible)
 SOFASCORE_CDN = "https://api.sofascore.com/api/v1"
