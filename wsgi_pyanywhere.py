@@ -12,13 +12,19 @@ if home not in sys.path:
     sys.path.insert(0, home)
 
 # Add backend subdirectory (in case code was imported from Git into a subfolder)
+# IMPORTANT: insert gfantasy-backend LAST so it has highest priority (sys.path[0])
 backend_subdirs = [
-    os.path.join(home, "gfantasy-backend"),
-    os.path.join(home, "backend"),
+    os.path.join(home, "backend"),           # lower priority
+    os.path.join(home, "gfantasy-backend"),  # highest priority (insert last)
 ]
 for d in backend_subdirs:
     if os.path.isdir(d) and d not in sys.path:
         sys.path.insert(0, d)
+# Force gfantasy-backend to position 0 (highest priority)
+_main_backend = os.path.join(home, "gfantasy-backend")
+if os.path.isdir(_main_backend):
+    sys.path.remove(_main_backend)
+    sys.path.insert(0, _main_backend)
 
 # CORS: allow frontend on Vercel
 os.environ.setdefault("CORS_ORIGINS", "https://gfweb-one.vercel.app")
@@ -66,6 +72,7 @@ except ImportError:
     print("[WSGI] a2wsgi not installed, using fallback adapter", file=sys.stderr)
 
 print(f"[WSGI] Adapter: {_adapter}", file=sys.stderr)
+print(f"[WSGI] sys.path[0:3]: {sys.path[:3]}", file=sys.stderr)
 
 
 if _adapter == "a2wsgi":
