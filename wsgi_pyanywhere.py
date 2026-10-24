@@ -12,10 +12,21 @@ import asyncio
 import os
 import sys
 
+# Add PythonAnywhere home directory to path
 home = os.path.expanduser("~")
 if home not in sys.path:
     sys.path.insert(0, home)
 
+# Add backend subdirectory (in case code was imported from Git into a subfolder)
+backend_subdirs = [
+    os.path.join(home, "gfantasy-backend"),
+    os.path.join(home, "backend"),
+]
+for d in backend_subdirs:
+    if os.path.isdir(d) and d not in sys.path:
+        sys.path.insert(0, d)
+
+# CORS: allow frontend on Vercel
 os.environ.setdefault("CORS_ORIGINS", "https://gfweb-one.vercel.app")
 os.environ.setdefault("GURUTZE_DISABLE_AUTO_CLOSE", "1")
 
