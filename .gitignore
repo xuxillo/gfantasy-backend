@@ -5,3 +5,4 @@ __pycache__/
 *.log
 .env
 output/
+sofascore.db  # root-level copy, not needed
