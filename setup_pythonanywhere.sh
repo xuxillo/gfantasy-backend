@@ -59,17 +59,32 @@ if [ -f "$WSGI_CONFIG" ]; then
 import os
 import sys
 
-# Add the backend directory to Python path (code was imported from Git)
-BACKEND_DIR = '/home/xuxillo/gfantasy-backend'
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
+# --- Force clean module cache (prevents stale code on PythonAnywhere reload) ---
+# PythonAnywhere's mod_wsgi may retain old module versions in sys.modules
+# unless we explicitly delete them. This ensures the WSGI app always picks
+# up the latest code from git pull.
+for _mod in list(sys.modules):
+    if _mod.startswith(('server_fantasy', 'wsgi_pyanywhere', 'fantasy_db',
+                         'fantasy_', 'sofa_', 'password_reset', 'events')):
+        del sys.modules[_mod]
 
-# Environment variables
-os.environ.setdefault("CORS_ORIGENS", "https://gfweb-one.vercel.app")
+# --- Add backend directory to Python path ---
+# Ensure ~/gfantasy-backend has HIGHEST priority in sys.path
+_home = os.path.expanduser("~")
+_backend_dir = os.path.join(_home, "gfantasy-backend")
+# Remove and re-insert at position 0 for guaranteed priority
+for _d in [_backend_dir, os.path.join(_home, "backend")]:
+    if _d in sys.path:
+        sys.path.remove(_d)
+if os.path.isdir(_backend_dir):
+    sys.path.insert(0, _backend_dir)
+
+# --- Environment variables ---
+os.environ.setdefault("CORS_ORIGINS", "https://gfweb-one.vercel.app")
 os.environ.setdefault("GURUTZE_DISABLE_AUTO_CLOSE", "1")
 os.environ.setdefault("GURUTZE_DISABLE_SOFA_UPDATE", "1")
 
-# Import the WSGI application from our module
+# Import the WSGI application (this re-imports everything fresh)
 from wsgi_pyanywhere import application
 WSGI
     echo "✅ Archivo WSGI configurado en: $WSGI_CONFIG"

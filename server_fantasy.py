@@ -1268,10 +1268,16 @@ async def admin_sync_players(user: dict = Depends(get_current_user)):
     return {"synced": count}
 
 
-# ---------- Health ----------
+# ---------- Health ---------- #
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "gurutze-fantasy", "sofascore_api": SOFASCORE_API}
+    return {
+        "status": "ok",
+        "service": "gurutze-fantasy",
+        "sofascore_api": SOFASCORE_API,
+        "version": "v2-debug-fix",
+        "routes_count": len([r for r in app.routes if hasattr(r, "path")]),
+    }
 
 
 # ---------- Matchday Scoring ----------
