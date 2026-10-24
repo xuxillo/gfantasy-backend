@@ -11,11 +11,14 @@ set -e
 echo "🚀 [1/5] Instalando dependencias del backend Fantasy..."
 
 # Detect Python version for the webapp (PythonAnywhere webapps use Python 3.11)
-# Use python3.11 specifically to match the webapp's Python version
+# Install for BOTH system Python 3.11 AND virtualenv (if exists)
+VENV_DIR="/home/xuxillo/.virtualenvs/python-3.11"
+
+# Primary: use python3.11 (system Python, includes user site-packages)
 if command -v python3.11 &>/dev/null; then
     PIP_CMD="python3.11 -m pip"
-elif [ -d "/home/xuxillo/.virtualenvs/python-3.11" ]; then
-    PIP_CMD="/home/xuxillo/.virtualenvs/python-3.11/bin/pip"
+elif [ -d "$VENV_DIR" ]; then
+    PIP_CMD="$VENV_DIR/bin/pip"
 else
     PIP_CMD="pip"
 fi
@@ -23,6 +26,12 @@ fi
 echo "  Using: $PIP_CMD"
 $PIP_CMD install --upgrade pip 2>&1 | tail -1
 $PIP_CMD install -r ~/gfantasy-backend/requirements.txt 2>&1 | tail -5
+
+# Also install in virtualenv if it exists (PythonAnywhere creates one automatically)
+if [ -d "$VENV_DIR" ]; then
+    echo "  Also installing in virtualenv at $VENV_DIR..."
+    $VENV_DIR/bin/pip install -r ~/gfantasy-backend/requirements.txt 2>&1 | tail -5
+fi
 
 echo ""
 echo "📝 [2/5] Creando archivo .env..."

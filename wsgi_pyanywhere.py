@@ -96,6 +96,18 @@ else:
             self.asgi_app = asgi_app
 
         def __call__(self, environ, start_response):
+            # WSGI stores Content-Type as CONTENT_TYPE (not HTTP_CONTENT_TYPE)
+            # Must explicitly include it in ASGI scope headers
+            _headers = [
+                (k[5:].lower().encode("latin-1"), v.encode("latin-1"))
+                for k, v in environ.items()
+                if k.startswith("HTTP_")
+            ]
+            if environ.get("CONTENT_TYPE"):
+                _headers.append((b"content-type", environ["CONTENT_TYPE"].encode("latin-1")))
+            if environ.get("CONTENT_LENGTH"):
+                _headers.append((b"content-length", environ["CONTENT_LENGTH"].encode("latin-1")))
+
             scope = {
                 "type": "http",
                 "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -104,16 +116,11 @@ else:
                 "path": environ.get("PATH_INFO", "/"),
                 "raw_path": environ.get("PATH_INFO", "/").encode("latin-1"),
                 "query_string": environ.get("QUERY_STRING", "").encode("latin-1"),
-                "headers": [
-                    (k[5:].lower().encode("latin-1"), v.encode("latin-1"))
-                    for k, v in environ.items()
-                    if k.startswith("HTTP_")
-                ],
+                "headers": _headers,
                 "client": (environ.get("REMOTE_ADDR", ""), 0),
                 "server": (environ.get("SERVER_NAME", "localhost"), int(environ.get("SERVER_PORT", 80))),
                 "method": environ.get("REQUEST_METHOD", "GET"),
                 "root_path": environ.get("SCRIPT_NAME", ""),
-                "type": "http",
             }
 
             try:
