@@ -42,6 +42,9 @@ IMAGES_ROOT = Path(__file__).resolve().parent / "output" / "25-26"
 # SofaScore API base (internal)
 SOFASCORE_API = "http://127.0.0.1:8000"
 
+# SoffaScore CDN externo (fallback cuando la API interna no esta disponible)
+SOFASCORE_CDN = "https://api.sofascore.com/api/v1"
+
 # Fantasy constants
 INITIAL_BUDGET = 50_000_000  # 50M €
 MAX_SQUAD_SIZE = 25

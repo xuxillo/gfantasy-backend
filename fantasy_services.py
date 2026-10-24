@@ -8,6 +8,7 @@ import random
 import secrets
 import httpx
 import sqlite3
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from datetime import datetime as dt_datetime, date as dt_date, timedelta, timezone as dt_timezone
 from typing import Any, Optional
 
@@ -16,7 +17,7 @@ from fantasy_db import (
     generate_invite_code, now_iso, FANTASY_DB_PATH
 )
 from fantasy_config import (
-    SOFASCORE_API, SOFASCORE_DB_PATH, INITIAL_BUDGET, MAX_SQUAD_SIZE, CONVOCATORIA_SIZE,
+    SOFASCORE_API, SOFASCORE_CDN, SOFASCORE_DB_PATH, INITIAL_BUDGET, MAX_SQUAD_SIZE, CONVOCATORIA_SIZE,
     CONTRACT_WEEKS, TOP_20_EXCLUDE, POSITION_ROLES, FORMATIONS, DEFAULT_FORMATION,
     PUFO_PERCENT, MARKET_SIZE, MARKET_STARS, CONTRACT_COMPENSATION, CAPTAIN_BONUS,
     SYNC_REQUIRE_ACTIVE_CLUB,
@@ -67,16 +68,35 @@ def _image_maps() -> tuple[dict, dict, dict]:
 
 
 def _con_imagenes(rows: list[dict]) -> list[dict]:
-    """Añade a cada jugador (dict) `photo_url` y `club_crest_url`."""
+    """Añade a cada jugador (dict) `photo_url` y `club_crest_url`.
+
+    Lee las rutas de imágenes desde la BD local de SofaScore.  Si la tabla
+    `imagenes_jugadores` no existe o no tiene datos para un jugador,
+    construye una ruta fallback `/sofa/imagenes/jugadores/<id>.webp` que el
+    backend resuelve pidiendo al CDN externo de SoffaScore.
+    """
     fotos, escudos, nombre2equipo = _image_maps()
     for row in rows:
         pid = row.get("player_id", row.get("id"))
         ruta_foto = fotos.get(pid) if pid is not None else None
-        row["photo_url"] = f"/sofa/{ruta_foto}" if ruta_foto else None
+        if ruta_foto:
+            row["photo_url"] = f"/sofa/{ruta_foto}"
+        elif pid is not None:
+            # Fallback: el ID de jugador coincide con el ID de SoffaScore
+            row["photo_url"] = f"/sofa/imagenes/jugadores/{pid}.webp"
+        else:
+            row["photo_url"] = None
         club = row.get("club_name")
         equipo_id = nombre2equipo.get(_norm_nombre(club)) if club else None
         ruta_escudo = escudos.get(equipo_id) if equipo_id else None
-        row["club_crest_url"] = f"/sofa/{ruta_escudo}" if ruta_escudo else None
+        if ruta_escudo:
+            row["club_crest_url"] = f"/sofa/{ruta_escudo}"
+        elif equipo_id is not None:
+            row["club_crest_url"] = f"/sofa/imagenes/equipos/{equipo_id}.png"
+        elif row.get("club_id") is not None:
+            row["club_crest_url"] = f"/sofa/imagenes/equipos/{row['club_id']}.png"
+        else:
+            row["club_crest_url"] = None
     return rows
 
 
@@ -630,12 +650,46 @@ def sync_players_from_sofascore_db(conn: Optional[sqlite3.Connection] = None, us
 
 
 async def sync_players_from_sofascore() -> int:
-    """Fetch players from SofaScore API and cache in fantasy DB."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{SOFASCORE_API}/api/players")
-        resp.raise_for_status()
-        data = resp.json()
-    players = data.get("players", [])
+    """Fetch players from SofaScore API and cache in fantasy DB.
+
+    Intenta primero la API interna (http://127.0.0.1:8000). Si falla,
+    reintenta con el CDN externo de SoffaScore usando curl_cffi (TLS spoofing)
+    para evitar bloqueos 403. Si ambos fallan silenciosamente, devuelve 0.
+    """
+    players = []
+
+    # 1) Internal API
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{SOFASCORE_API}/api/players")
+            resp.raise_for_status()
+            data = resp.json()
+            players = data.get("players", [])
+    except Exception:
+        pass
+
+    # 2) External CDN fallback (curl_cffi for TLS spoofing)
+    if not players:
+        try:
+            async with CurlAsyncSession(impersonate="chrome") as client:
+                resp = await client.get(
+                    f"{SOFASCORE_CDN}/players",
+                    headers={
+                        "Accept": "application/json, text/plain, */*",
+                        "Referer": "https://www.sofascore.com/",
+                        "Origin": "https://www.sofascore.com",
+                    },
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    players = data.get("content", data.get("items", data.get("players", [])))
+        except Exception:
+            pass
+
+    if not players:
+        return 0
+
     count = 0
     with transaction() as conn:
         for p in players:

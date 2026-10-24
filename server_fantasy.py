@@ -3,15 +3,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
+import httpx
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, Body, Response, Request, Cookie
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
@@ -25,7 +29,7 @@ from fantasy_services import (
     get_squad, get_matchday_squad, update_matchday_squad,
     get_today_market, refresh_market, place_bid, get_my_bids, cancel_bid,
     create_user_offer, respond_to_offer, get_budget_info,
-    sync_players_from_sofascore, estimate_market_value,
+    sync_players_from_sofascore, sync_players_from_sofascore_db, estimate_market_value,
     username_of, run_matchday_scoring, close_matchday, run_nightly_maintenance,
     create_default_matchday_squad, get_user_context,
     get_user_season_stats, get_user_evolution, get_reminders,
@@ -286,12 +290,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Imágenes de SofaScore (fotos de jugadores y escudos de clubes) servidas
-# directamente desde el disco. La web las referencia como /sofa/<ruta> y las
-# hace proxy a través de Next.js (ver next.config.js).
-# Antes de montar, se completa la raíz estable con las fotos que la BD
-# referencia pero que solo existen en la carpeta de otra temporada (el
-# extractor descarga en output/<temporada activa>). Ver completar_imagenes.py.
+# Imágenes de SofaScore (fotos de jugadores y escudos de clubes).
+# La web las referencia como /sofa/<ruta> y las hace proxy a través de
+# Next.js (ver next.config.js).
+# Antes de servir desde el disco, se completa la raíz estable con las fotos
+# que la BD referencia pero que solo existen en la carpeta de otra temporada.
 try:
     from completar_imagenes import asegurar_imagenes_stables
     _copiadas, _ausentes = asegurar_imagenes_stables()
@@ -302,8 +305,188 @@ try:
 except Exception as _e:  # nunca debe tumbar el arranque del servidor
     print(f"[sofa-images] aviso: no se pudo completar la carpeta de imágenes: {_e}")
 
-if IMAGES_ROOT.exists():
-    app.mount("/sofa", StaticFiles(directory=str(IMAGES_ROOT)), name="sofa-images")
+# CDN externo de SoffaScore (se usa como fallback cuando no hay archivos locales)
+SOFASCORE_CDN = "https://api.sofascore.com/api/v1"
+
+
+def _cdn_url_for_sofa_path(path: str) -> Optional[str]:
+    """Convierte una ruta local /sofa/imagenes/... en la URL del CDN de SoffaScore."""
+    m = re.match(r"imagenes/jugadores/(\d+)", path)
+    if m:
+        return f"{SOFASCORE_CDN}/player/{m.group(1)}/image"
+    m = re.match(r"imagenes/equipos/(\d+)", path)
+    if m:
+        return f"{SOFASCORE_CDN}/team/{m.group(1)}/image"
+    return None
+
+
+_SOFA_CDN_HEADERS = {
+    "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
+    "Accept": "*/*",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+# Tamanio minimo para considerar que la CDN ha devuelto una imagen real
+# (el CDN a veces responde 200 con un PNG placeholder de 68 bytes).
+_MIN_REAL_IMAGE_BYTES = 100
+
+
+# ---------- SVG placeholder helpers ---------- #
+def _svg_response(initials: str, bg_color: str = "#4A90D9") -> Response:
+    """Genera un SVG con las iniciales sobre un fondo de color."""
+    from html import escape as _escape
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        f'<rect width="100" height="100" rx="50" fill="{bg_color}"/>'
+        f'<text x="50" y="60" font-family="Arial, sans-serif" '
+        f'font-size="40" font-weight="bold" fill="white" '
+        f'text-anchor="middle">{_escape(initials)}</text></svg>'
+    )
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+def _svg_player_placeholder(player_id: int) -> Response:
+    """Look up player name in fantasy DB and generate an SVG with initials."""
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT name FROM players WHERE id = ?", (player_id,)
+            ).fetchone()
+            if row and row["name"]:
+                name = row["name"]
+                initials = "".join(w[0].upper() for w in name.split()[:2] if w)
+                if initials:
+                    return _svg_response(initials, "#4A90D9")
+    except Exception:
+        pass
+    return _svg_response(str(player_id)[-4:], "#6c757d")
+
+
+def _svg_team_placeholder(team_id: int) -> Response:
+    """Look up club name in fantasy DB and generate an SVG with initials."""
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT club_name FROM players WHERE club_id = ? LIMIT 1", (team_id,)
+            ).fetchone()
+            if row and row["club_name"]:
+                initials = "".join(w[0].upper() for w in row["club_name"].split()[:2] if w)
+                if initials:
+                    return _svg_response(initials, "#28a745")
+    except Exception:
+        pass
+    return _svg_response("?", "#6c757d")
+
+
+def _svg_placeholder_for_path(path: str) -> Optional[Response]:
+    """Devuelve un SVG placeholder para jugadores o equipos, o None."""
+    m = re.match(r"imagenes/jugadores/(\d+)", path)
+    if m:
+        return _svg_player_placeholder(int(m.group(1)))
+    m = re.match(r"imagenes/equipos/(\d+)", path)
+    if m:
+        return _svg_team_placeholder(int(m.group(1)))
+    return None
+
+
+# ---------- Image proxy ---------- #
+@app.get("/sofa/{path:path}")
+async def serve_sofa_image(path: str):
+    """Sirve imágenes de SoffaScore: disco local -> API interna -> CDN externo -> SVG fallback.
+
+    1) Intenta servir desde el directorio local (IMAGES_ROOT).
+    2) Intenta la API interna de SoffaScore (http://127.0.0.1:8000/sofa/...).
+    3) Fallback: CDN público de SoffaScore usando curl_cffi (TLS fingerprint
+       spoofing) para evitar el bloqueo 403. Detecta placeholders de 68 bytes.
+    4) Genera un SVG con las iniciales del jugador/equipo como última instancia.
+    """
+    # 1) Directorio local
+    if IMAGES_ROOT.exists():
+        file_path = IMAGES_ROOT / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+
+    # 2) API interna de SoffaScore
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{SOFASCORE_API}/sofa/{path}")
+            if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
+                return Response(
+                    content=resp.content,
+                    media_type=resp.headers.get("content-type", "image/webp"),
+                )
+    except Exception:
+        pass
+
+    # 3) CDN externo (curl_cffi para evitar 403 anti-bot)
+    cdn_url = _cdn_url_for_sofa_path(path)
+    if cdn_url:
+        try:
+            async with CurlAsyncSession(impersonate="chrome") as client:
+                resp = await client.get(cdn_url, headers=_SOFA_CDN_HEADERS, timeout=15)
+                if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
+                    return Response(
+                        content=resp.content,
+                        media_type=resp.headers.get("content-type", "image/webp"),
+                    )
+        except Exception:
+            pass
+
+    # 4) SVG fallback (iniciales del jugador/equipo)
+    svg = _svg_placeholder_for_path(path)
+    if svg:
+        return svg
+
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
+# ---------- SoffaScore API proxy ---------- #
+@app.get("/sofascore-proxy/{path:path}")
+async def sofascore_api_proxy(path: str, request: Request):
+    """Proxy SoffaScore API requests: internal API -> external CDN.
+
+    Permite al frontend acceder a /api/players, /api/standings, etc. a través
+    del proxy de Vercel -> backend -> API de SoffaScore.
+
+    - Primero intenta la API interna (http://127.0.0.1:8000).
+    - Si falla (no disponible en producción), intenta el CDN externo con
+      curl_cffi (TLS fingerprinting) para evitar bloqueos 403.
+    """
+    params = dict(request.query_params) if request.query_params else None
+
+    # 1) Internal SoffaScore API
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{SOFASCORE_API}/{path}", params=params)
+            if resp.status_code == 200:
+                return Response(
+                    content=resp.content,
+                    media_type=resp.headers.get("content-type", "application/json"),
+                )
+    except Exception:
+        pass
+
+    # 2) External CDN (strip "api/" prefix since CDN URL already has /api/v1)
+    cdn_path = path[4:] if path.startswith("api/") else path
+    cdn_url = f"{SOFASCORE_CDN}/{cdn_path}"
+    try:
+        async with CurlAsyncSession(impersonate="chrome") as client:
+            resp = await client.get(
+                cdn_url, headers=_SOFA_CDN_HEADERS, params=params, timeout=30
+            )
+            return Response(
+                content=resp.content,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+    except Exception:
+        pass
+
+    raise HTTPException(
+        status_code=502,
+        detail="SofaScore API unavailable (internal API and CDN fallback both failed)",
+    )
 
 
 # ---------- Auth helpers ----------
@@ -1065,7 +1248,11 @@ def league_achievements_get(league_id: int, user: dict = Depends(get_current_use
 @app.post("/admin/sync-players")
 async def admin_sync_players(user: dict = Depends(get_current_user)):
     # In production, restrict to admin users
+    # First try the live API; if that returns 0 (API blocked), fall back to
+    # reading directly from the local SoffaScore SQLite DB.
     count = await sync_players_from_sofascore()
+    if count == 0:
+        count = sync_players_from_sofascore_db()
     return {"synced": count}
 
 

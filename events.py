@@ -1,54 +1,69 @@
-# events.py - Módulo de eventos para server_fantasy.py
-# Importado en la línea 20 del servidor para notificar cierres de jornadas
+"""Hub de eventos en tiempo real para Gurutze Fantasy (SSE).
 
-class EventPublisher:
-    """Publicador de eventos del sistema Fantasy.
-    
-    Almacena eventos importantes como cierres de jornadas,
-    para que puedan procesarse automáticamente (sumar puntos,
-    actualizar tablas, etc.).
+Mantiene las colas de eventos por liga de los clientes conectados y permite
+**publicar** un evento (p. ej. "se ha cerrado una jornada") desde cualquier
+hilo (el loop de auto-cierre, un endpoint, etc.) hacia todos los clientes de
+esa liga. El punto de entrada `publish` es seguro entre hilos: usa
+`loop.call_soon_threadsafe` para inyectar el evento en el event loop de
+FastAPI.
+"""
+import asyncio
+import threading
+from typing import Any, Optional
+
+# league_id -> conjunto de colas (una por cliente conectado)
+_queues: dict[int, set[asyncio.Queue]] = {}
+_lock = threading.Lock()
+_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def init_hub(loop: asyncio.AbstractEventLoop) -> None:
+    """Se llama en el arranque del servidor (lifespan) para guardarse el loop."""
+    global _loop
+    _loop = loop
+
+
+def _deliver(league_id: int, payload: dict) -> None:
+    """Ejecutado EN el event loop: inyecta el evento en las colas de la liga."""
+    with _lock:
+        queues = list(_queues.get(league_id, ()))
+    for q in queues:
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            # La cola podría cerrarse en el momento exacto de la desconexión.
+            pass
+
+
+def publish(league_id: int, payload: dict) -> None:
+    """Publica un evento a los clientes de una liga. Usable desde cualquier hilo.
+
+    Si el servidor no está activo (loop None/cerrado) es un no-op.
     """
-    
-    # Lista para guardar todos los eventos que se publiquen
-    published_events = []
-    
-    @staticmethod
-    def publish(league_id, event_data):
-        """
-        Publica un evento del sistema.
-        
-        Este es el punto de entrada que usa server_fantasy.py 
-        para avisar cuando una jornada se cierra automáticamente.
-        
-        Args:
-            league_id: ID de la liga donde ocurre el evento
-            event_data: Diccionario con los datos del evento:
-                - type: tipo de evento (ej: "matchday_closed")
-                - league_id: ID de la liga
-                - matchday: jornada número
-                - advanced_to: a qué jornada avanzó
-        """
-        # 1. Guardamos el evento en nuestra lista interna
-        event_entry = {
-            "league_id": league_id,
-            "type": event_data.get("type", "unknown"),
-            "data": event_data,
-        }
-        EventPublisher.published_events.append(event_entry)
-        
-        # 2. Mostramos en consola qué pasó (para que el admin lo vea)
-        print(f"[evento_sistema] Liga {league_id}: {event_data.get('type', 'unknown')}")
-        
-        # 3. Aquí podría ir lógica adicional futura:
-        # - Sumar puntos automáticamente
-        # - Actualizar tablas de posiciones  
-        # - Enviar notificaciones
-        # - Cerrar la jornada en la base de datos
-        
-        # Por ahora, solo imprimimos y guardamos el registro
-        return event_entry
+    loop = _loop
+    if loop is None or loop.is_closed():
+        return
+    try:
+        loop.call_soon_threadsafe(_deliver, league_id, payload)
+    except RuntimeError:
+        # El loop ya se cerró (apagando el servidor): no hacemos nada.
+        pass
 
 
-# Instancia global que importará server_fantasy.py
-# server_fantasy.py hará: `from events import events` (la instancia abajo)
-events = EventPublisher()
+def register(league_id: int, queue: "asyncio.Queue[Any]") -> None:
+    with _lock:
+        _queues.setdefault(league_id, set()).add(queue)
+
+
+def unregister(league_id: int, queue: "asyncio.Queue[Any]") -> None:
+    with _lock:
+        queues = _queues.get(league_id)
+        if queues:
+            queues.discard(queue)
+            if not queues:
+                _queues.pop(league_id, None)
+
+
+def connected(league_id: int) -> int:
+    with _lock:
+        return len(_queues.get(league_id, ()))
