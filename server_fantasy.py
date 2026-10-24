@@ -392,8 +392,8 @@ def _svg_placeholder_for_path(path: str) -> Optional[Response]:
 
 
 # ---------- Image proxy ---------- #
-@app.get("/sofa/{path:path}")
-async def serve_sofa_image(path: str):
+@app.get("/sofa/{foto_path:path}")
+async def serve_sofa_image(foto_path: str):
     """Sirve imágenes de SoffaScore: disco local -> API interna -> CDN externo -> SVG fallback.
 
     1) Intenta servir desde el directorio local (IMAGES_ROOT).
@@ -404,14 +404,14 @@ async def serve_sofa_image(path: str):
     """
     # 1) Directorio local
     if IMAGES_ROOT.exists():
-        file_path = IMAGES_ROOT / path
+        file_path = IMAGES_ROOT / foto_path
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
 
     # 2) API interna de SoffaScore
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{SOFASCORE_API}/sofa/{path}")
+            resp = await client.get(f"{SOFASCORE_API}/sofa/{foto_path}")
             if resp.status_code == 200 and len(resp.content) > _MIN_REAL_IMAGE_BYTES:
                 return Response(
                     content=resp.content,
@@ -421,7 +421,7 @@ async def serve_sofa_image(path: str):
         pass
 
     # 3) CDN externo (curl_cffi para evitar 403 anti-bot)
-    cdn_url = _cdn_url_for_sofa_path(path)
+    cdn_url = _cdn_url_for_sofa_path(foto_path)
     if cdn_url:
         try:
             async with CurlAsyncSession(impersonate="chrome") as client:
@@ -435,16 +435,28 @@ async def serve_sofa_image(path: str):
             pass
 
     # 4) SVG fallback (iniciales del jugador/equipo)
-    svg = _svg_placeholder_for_path(path)
+    svg = _svg_placeholder_for_path(foto_path)
     if svg:
         return svg
 
     raise HTTPException(status_code=404, detail="Image not found")
 
 
+# ---------- Debug: list all registered routes ---------- #
+@app.get("/debug/routes")
+async def debug_routes():
+    """Debug endpoint to list all registered route paths."""
+    routes = []
+    for r in app.routes:
+        if hasattr(r, "path"):
+            methods = getattr(r, "methods", None)
+            routes.append({"path": r.path, "methods": list(methods) if methods else None})
+    return {"count": len(routes), "routes": routes}
+
+
 # ---------- SoffaScore API proxy ---------- #
-@app.get("/sofascore-proxy/{path:path}")
-async def sofascore_api_proxy(path: str, request: Request):
+@app.get("/sofascore-proxy/{foto_path:path}")
+async def sofascore_api_proxy(foto_path: str, request: Request):
     """Proxy SoffaScore API requests: internal API -> external CDN.
 
     Permite al frontend acceder a /api/players, /api/standings, etc. a través
@@ -459,7 +471,7 @@ async def sofascore_api_proxy(path: str, request: Request):
     # 1) Internal SoffaScore API
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(f"{SOFASCORE_API}/{path}", params=params)
+            resp = await client.get(f"{SOFASCORE_API}/{foto_path}", params=params)
             if resp.status_code == 200:
                 return Response(
                     content=resp.content,
@@ -469,7 +481,7 @@ async def sofascore_api_proxy(path: str, request: Request):
         pass
 
     # 2) External CDN (strip "api/" prefix since CDN URL already has /api/v1)
-    cdn_path = path[4:] if path.startswith("api/") else path
+    cdn_path = foto_path[4:] if foto_path.startswith("api/") else foto_path
     cdn_url = f"{SOFASCORE_CDN}/{cdn_path}"
     try:
         async with CurlAsyncSession(impersonate="chrome") as client:
