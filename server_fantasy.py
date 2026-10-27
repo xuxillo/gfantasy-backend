@@ -1312,7 +1312,7 @@ def health():
     return {
         "status": "ok",
         "service": "gurutze-fantasy",
-        "version": "v2-debug-fix",
+        "version": "v2-debug-fix-images-bd",
         "sofascore_api": SOFASCORE_API or "(disabled - usando CDN externa)",
         "sofascore_db_exists": bool(sofa_db_exists) if sofa_db_exists else False,
         "sofascore_db_size": sofa_db_size,
