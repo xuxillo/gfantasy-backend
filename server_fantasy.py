@@ -1308,7 +1308,7 @@ def health():
     images_root_exists = IMAGES_ROOT.exists()
     images_count = 0
     if images_root_exists:
-        images_count = sum(1 for _ in IMAGES_ROOT.rglob("*.webp"))
+        images_count = sum(1 for _ in IMAGES_ROOT.rglob("*.webp")) + sum(1 for _ in IMAGES_ROOT.rglob("*.png"))
     return {
         "status": "ok",
         "service": "gurutze-fantasy",
