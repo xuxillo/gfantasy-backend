@@ -27,16 +27,16 @@ def main():
     files = result.stdout.strip().split("\n")
     has_db_zip = "data/sofascore.zip" in files
     has_images_zip = "output_26-27_images.zip" in files
-    print(f"Git data/sofascore.zip committed: {'✅' if has_db_zip else '❌'}")
-    print(f"Git output_26-27_images.zip committed: {'✅' if has_images_zip else '❌'}")
+    print(f"Git data/sofascore.zip committed: {'OK' if has_db_zip else 'MISSING'}")
+    print(f"Git output_26-27_images.zip committed: {'OK' if has_images_zip else 'MISSING'}")
 
     # 2. Check version string
     with open(os.path.join(backend_dir, "server_fantasy.py"), "r", encoding="utf-8") as f:
         content = f.read()
     if "v2-debug-fix-images-bd" in content:
-        print("Version string updated: ✅")
+        print("Version string updated: OK")
     else:
-        print("Version string updated: ❌ (still v2-debug-fix)")
+        print("Version string updated: OLD (still v2-debug-fix)")
 
     # 3. Check config
     try:
