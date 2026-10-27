@@ -29,6 +29,11 @@ if os.path.isdir(_main_backend):
 # CORS: allow frontend on Vercel
 os.environ.setdefault("CORS_ORIGINS", "https://gfweb-one.vercel.app")
 os.environ.setdefault("GURUTZE_DISABLE_AUTO_CLOSE", "1")
+# Desactivar API interna de SofaScore en PythonAnywhere (no hay server en 127.0.0.1:8000)
+# El backend usará el CDN externo con curl_cffi como fallback.
+os.environ.setdefault("GURUTZE_DISABLE_SOFA_UPDATE", "1")
+os.environ.setdefault("GURUTZE_DISABLE_NIGHTLY", "1")
+os.environ.setdefault("SOFASCORE_API", "")
 
 from server_fantasy import app
 from fantasy_db import init_db
